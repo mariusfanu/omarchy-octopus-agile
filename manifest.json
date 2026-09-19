@@ -17,7 +17,10 @@
     "allowMultiple": false,
     "defaultSection": "center",
     "defaults": {
-      "showTrend": true
+      "showTrend": true,
+      "notifyCheap": false,
+      "notifyLeadMin": 15,
+      "notifyBelow": 10
     },
     "schema": [
       {
@@ -26,6 +29,33 @@
         "label": "Next-slot arrow",
         "description": "Show ↑ or ↓ on the pill when the next half-hour is a different price.",
         "defaultValue": true
+      },
+      {
+        "key": "notifyCheap",
+        "type": "boolean",
+        "label": "Cheap window alerts",
+        "description": "Desktop notification before a cheap or plunge slot. Off by default.",
+        "defaultValue": false
+      },
+      {
+        "key": "notifyLeadMin",
+        "type": "integer",
+        "label": "Alert lead time (minutes)",
+        "min": 5,
+        "max": 30,
+        "step": 5,
+        "defaultValue": 15,
+        "description": "How far ahead of a cheap slot to notify."
+      },
+      {
+        "key": "notifyBelow",
+        "type": "integer",
+        "label": "Alert below (p/kWh)",
+        "min": 0,
+        "max": 25,
+        "step": 1,
+        "defaultValue": 10,
+        "description": "Notify when an upcoming slot is below this price. Negative (plunge) always alerts when enabled."
       }
     ]
   }

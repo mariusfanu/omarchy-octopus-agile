@@ -8,6 +8,8 @@ Live Octopus Agile electricity prices in your bar.
   **cheapest 1h / 2h / 3h windows from now**, and a full-day 30-min bar chart.
 - Footer has a **region picker (A–P)** — persisted to `shell.json` —
   plus refresh and Octopus dashboard buttons.
+- Optional **cheap-window alerts** (off by default): a desktop notification
+  before a slot below 10p, or any plunge. Click the toast to open the popup.
 - Prices auto-refresh every 5 minutes; the current slot rolls over every 30s.
 
 ## Install
@@ -47,12 +49,22 @@ That disables the widget and deletes the plugin checkout. It does not edit `omar
 ## Settings (`~/.config/omarchy/shell.json`)
 
 ```json
-{ "id": "io.github.mariusfanu.octopus-agile", "region": "C", "showTrend": true }
+{
+  "id": "io.github.mariusfanu.octopus-agile",
+  "region": "C",
+  "showTrend": true,
+  "notifyCheap": false,
+  "notifyLeadMin": 15,
+  "notifyBelow": 10
+}
 ```
 
 - `region`: UK DNO letter A–P (default `C` London). Change it from the popup dropdown.
 - `product`: optional override. When empty the latest `AGILE-*` import product is auto-discovered.
 - `showTrend`: `true` (default) shows ↑ / ↓ on the pill. Turn it off from the popup or Omarchy widget settings.
+- `notifyCheap`: `false` (default). When `true`, notify before a cheap or plunge slot.
+- `notifyLeadMin`: minutes ahead to warn (5–30, default 15).
+- `notifyBelow`: notify when the upcoming slot is below this p/kWh (default 10). Plunge prices always notify when alerts are on.
 
 ## Files
 
