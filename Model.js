@@ -44,8 +44,6 @@ function normalizeRegion(code, fallback) {
   return "C";
 }
 
-// Latest AGILE import product from /v1/products/ (filters out
-// AGILE-OUTGOING, AGILE-BB, etc). Returns "" when unparseable.
 function parseLatestAgileProduct(raw) {
   try {
     var data = JSON.parse(String(raw || "{}"));
@@ -63,8 +61,6 @@ function parseLatestAgileProduct(raw) {
   }
 }
 
-// Parse /standard-unit-rates/ response into ascending slots:
-// [{ fromMs, toMs, fromIso, toIso, price }]
 function parseRates(raw) {
   try {
     var data = JSON.parse(String(raw || "{}"));
@@ -109,8 +105,6 @@ function findNext(rates, nowMs) {
   return best;
 }
 
-// Cheapest consecutive window of `slots` half-hour slots at/after fromMs.
-// Returns { startMs, endMs, avg, min, max, slots } or null.
 function cheapestWindow(rates, slots, fromMs) {
   var list = rates || [];
   var n = parseInt(slots, 10);
@@ -120,7 +114,6 @@ function cheapestWindow(rates, slots, fromMs) {
   var bestAvg = Infinity;
   for (var i = 0; i + n <= list.length; i++) {
     if (list[i].fromMs < start) continue;
-    // Require contiguity (30-min slots back to back).
     var contiguous = true;
     var sum = 0;
     var min = Infinity;
@@ -197,11 +190,44 @@ function formatPrice(p) {
   return n.toFixed(1) + "p";
 }
 
+function isOn(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback === true;
+  if (value === false || value === 0 || value === "0" || value === "false" || value === "off" || value === "Off")
+    return false;
+  if (value === true || value === 1 || value === "1" || value === "true" || value === "on" || value === "On")
+    return true;
+  return fallback === true;
+}
+
+function priceTrend(currentPrice, nextPrice) {
+  var c = parseFloat(currentPrice);
+  var n = parseFloat(nextPrice);
+  if (isNaN(c) || isNaN(n)) return "unknown";
+  if (c.toFixed(1) === n.toFixed(1)) return "flat";
+  return n > c ? "up" : "down";
+}
+
+function trendArrow(trend) {
+  if (trend === "up") return "↑";
+  if (trend === "down") return "↓";
+  return "";
+}
+
+function pillLabel(currentPrice, nextPrice, showTrend, loading) {
+  if (currentPrice === undefined || currentPrice === null || currentPrice === "")
+    return loading ? " …" : " —";
+  var text = " " + formatPrice(currentPrice);
+  if (showTrend) {
+    var arrow = trendArrow(priceTrend(currentPrice, nextPrice));
+    if (arrow) text += " " + arrow;
+  }
+  return text;
+}
+
 function pad2(n) {
   return (n < 10 ? "0" : "") + n;
 }
 
-// Local HH:MM for epoch ms (used in node tests; QML prefers Qt.formatDateTime).
 function formatTime(ms) {
   var d = new Date(ms);
   return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
@@ -211,7 +237,6 @@ function formatRange(startMs, endMs) {
   return formatTime(startMs) + "–" + formatTime(endMs);
 }
 
-// 0..1 bar height for chart, floored so tiny/negative values stay visible.
 function barHeight(price, min, max) {
   var lo = parseFloat(min), hi = parseFloat(max), p = parseFloat(price);
   if (isNaN(lo) || isNaN(hi) || isNaN(p)) return 0.1;
@@ -244,6 +269,10 @@ if (typeof module !== "undefined") {
     levelForPrice: levelForPrice,
     colorForPrice: colorForPrice,
     formatPrice: formatPrice,
+    isOn: isOn,
+    priceTrend: priceTrend,
+    trendArrow: trendArrow,
+    pillLabel: pillLabel,
     formatTime: formatTime,
     formatRange: formatRange,
     barHeight: barHeight,
