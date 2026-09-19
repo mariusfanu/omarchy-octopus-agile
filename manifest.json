@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.mariusfanu.octopus-agile",
+  "name": "Octopus Agile",
+  "version": "1.0.0",
+  "author": "Marius Fanu",
+  "license": "MIT",
+  "description": "Live Octopus Agile electricity prices with cheapest windows and day chart",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Octopus Agile",
+    "description": "Current Agile price pill with full-day popup",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "center"
+  }
+}
