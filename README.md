@@ -2,7 +2,8 @@
 
 Live Octopus Agile electricity prices in your bar.
 
-- Pill shows the **current half-hour price** (` 12.3p`), `…` while loading.
+- Pill shows the **current half-hour price** (` 12.3p ↑`), `…` while loading.
+  Optional **↑ / ↓** for whether the next slot is more or less expensive.
 - Click the pill for the popup: current + next price, min/avg/max,
   **cheapest 1h / 2h / 3h windows from now**, and a full-day 30-min bar chart.
 - Footer has a **region picker (A–P)** — persisted to `shell.json` —
@@ -46,11 +47,12 @@ That disables the widget and deletes the plugin checkout. It does not edit `omar
 ## Settings (`~/.config/omarchy/shell.json`)
 
 ```json
-{ "id": "io.github.mariusfanu.octopus-agile", "region": "C", "product": "AGILE-24-10-01" }
+{ "id": "io.github.mariusfanu.octopus-agile", "region": "C", "showTrend": true }
 ```
 
 - `region`: UK DNO letter A–P (default `C` London). Change it from the popup dropdown.
 - `product`: optional override. When empty the latest `AGILE-*` import product is auto-discovered.
+- `showTrend`: `true` (default) shows ↑ / ↓ on the pill. Turn it off from the popup or Omarchy widget settings.
 
 ## Files
 

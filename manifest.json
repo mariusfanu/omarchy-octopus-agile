@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.mariusfanu.octopus-agile",
   "name": "Octopus Agile",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Marius Fanu",
   "license": "MIT",
   "description": "Live Octopus Agile electricity prices with cheapest windows and day chart",
@@ -15,6 +15,18 @@
     "description": "Current Agile price pill with full-day popup",
     "category": "Info",
     "allowMultiple": false,
-    "defaultSection": "center"
+    "defaultSection": "center",
+    "defaults": {
+      "showTrend": true
+    },
+    "schema": [
+      {
+        "key": "showTrend",
+        "type": "boolean",
+        "label": "Next-slot arrow",
+        "description": "Show ↑ or ↓ on the pill when the next half-hour is a different price.",
+        "defaultValue": true
+      }
+    ]
   }
 }
