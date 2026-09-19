@@ -224,6 +224,32 @@ function pillLabel(currentPrice, nextPrice, showTrend, loading) {
   return text;
 }
 
+function clampInt(value, fallback, min, max) {
+  var n = parseInt(value, 10);
+  if (isNaN(n)) n = fallback;
+  if (n < min) n = min;
+  if (n > max) n = max;
+  return n;
+}
+
+function nextNotifiableSlot(rates, nowMs, leadMs, below) {
+  var list = rates || [];
+  var lead = Number(leadMs);
+  var cap = parseFloat(below);
+  if (!(lead > 0) || isNaN(cap)) return null;
+  var latest = nowMs + lead;
+  var best = null;
+  for (var i = 0; i < list.length; i++) {
+    var s = list[i];
+    if (!s || s.fromMs <= nowMs || s.fromMs > latest) continue;
+    var p = parseFloat(s.price);
+    if (isNaN(p)) continue;
+    if (p >= 0 && p >= cap) continue;
+    if (!best || s.fromMs < best.fromMs) best = s;
+  }
+  return best;
+}
+
 function pad2(n) {
   return (n < 10 ? "0" : "") + n;
 }
@@ -273,6 +299,8 @@ if (typeof module !== "undefined") {
     priceTrend: priceTrend,
     trendArrow: trendArrow,
     pillLabel: pillLabel,
+    clampInt: clampInt,
+    nextNotifiableSlot: nextNotifiableSlot,
     formatTime: formatTime,
     formatRange: formatRange,
     barHeight: barHeight,
