@@ -44,7 +44,7 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
   }
 
-  readonly property string pillText: panelLoader.item && panelLoader.item.label !== "" ? panelLoader.item.label : " —"
+  readonly property string pillText: panelLoader.item && panelLoader.item.label !== "" ? panelLoader.item.label : " —"
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight

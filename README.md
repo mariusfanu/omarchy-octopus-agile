@@ -2,7 +2,7 @@
 
 Live Octopus Agile electricity prices in your bar.
 
-- Pill shows the **current half-hour price** (` 12.3p`), `…` while loading.
+- Pill shows the **current half-hour price** (` 12.3p`), `…` while loading.
 - Click the pill for the popup: current + next price, min/avg/max,
   **cheapest 1h / 2h / 3h windows from now**, and a full-day 30-min bar chart.
 - Footer has a **region picker (A–P)** — persisted to `shell.json` —
@@ -20,9 +20,9 @@ That clones the plugin and places it on the bar. Pick your UK DNO region from th
 Optional Omarchy menu row — add this to `~/.config/omarchy/extensions/omarchy-menu.jsonc`:
 
 ```jsonc
-"energy": {"icon":"","label":"Energy"},
+"energy": {"icon":"","label":"Energy"},
 "energy.octopus": {
-  "icon": "",
+  "icon": "",
   "label": "Octopus Agile",
   "action": "omarchy-shell io.github.mariusfanu.octopus-agile toggle",
   "description": "Live Agile prices, cheapest windows and day chart"
