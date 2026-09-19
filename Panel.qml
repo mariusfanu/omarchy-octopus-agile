@@ -59,12 +59,22 @@ Panel {
   property string error: ""
   property string lastUpdated: ""
   property var hoveredSlot: null
+  property double lastNotifiedFromMs: 0
 
-  onRatesChanged: root.hoveredSlot = null
+  onRatesChanged: {
+    root.hoveredSlot = null
+    Qt.callLater(root.checkAlerts)
+  }
 
   readonly property string region: Model.normalizeRegion(setting("region", "C"), "C")
   readonly property string productOverride: String(setting("product", "") || "")
   readonly property string product: productOverride !== "" ? productOverride : (discoveredProduct !== "" ? discoveredProduct : Model.PRODUCT_FALLBACK)
+  readonly property bool showTrend: Model.isOn(setting("showTrend", true), true)
+  readonly property bool notifyCheap: Model.isOn(setting("notifyCheap", false), false)
+  readonly property int notifyLeadMin: Model.clampInt(setting("notifyLeadMin", 15), 15, 5, 30)
+  readonly property int notifyBelow: Model.clampInt(setting("notifyBelow", 10), 10, 0, 25)
+
+  onNotifyCheapChanged: if (notifyCheap) Qt.callLater(root.checkAlerts)
 
   readonly property var current: Model.findCurrent(rates, nowMs)
   readonly property var next: Model.findNext(rates, nowMs)
@@ -73,10 +83,19 @@ Panel {
   readonly property real minPrice: rateStats.min
   readonly property real maxPrice: rateStats.max
 
-  readonly property string label: current ? (" " + Model.formatPrice(current.price)) : (loading ? " …" : " —")
-  readonly property string tooltip: current
-    ? ("Octopus Agile " + region + " · " + Model.formatPrice(current.price) + " (" + timeOf(current.fromMs) + "–" + timeOf(current.toMs) + ")")
-    : ("Octopus Agile " + region)
+  readonly property string label: Model.pillLabel(current ? current.price : null, next ? next.price : null, showTrend, loading)
+  readonly property string tooltip: {
+    if (!current)
+      return "Octopus Agile " + region
+    var text = "Octopus Agile " + region + " · " + Model.formatPrice(current.price)
+      + " (" + timeOf(current.fromMs) + "–" + timeOf(current.toMs) + ")"
+    if (next) {
+      var arrow = showTrend ? Model.trendArrow(Model.priceTrend(current.price, next.price)) : ""
+      text += " · next " + Model.formatPrice(next.price) + " @ " + timeOf(next.fromMs)
+      if (arrow) text += " " + arrow
+    }
+    return text
+  }
 
   function timeOf(ms) {
     if (ms === undefined || ms === null) return "--:--"
@@ -112,10 +131,47 @@ Panel {
   }
 
   function setRegion(code) {
-    var next = Model.normalizeRegion(code, region)
-    if (next === region) return
-    persistSettings({ region: next })
+    var nextRegion = Model.normalizeRegion(code, region)
+    if (nextRegion === region) return
+    lastNotifiedFromMs = 0
+    persistSettings({ region: nextRegion })
     Qt.callLater(root.refreshRates)
+  }
+
+  function setShowTrend(on) {
+    persistSettings({ showTrend: on === true })
+  }
+
+  function setNotifyCheap(on) {
+    persistSettings({ notifyCheap: on === true })
+  }
+
+  function checkAlerts() {
+    if (!notifyCheap || rates.length === 0) return
+    var slot = Model.nextNotifiableSlot(rates, nowMs, notifyLeadMin * 60 * 1000, notifyBelow)
+    if (!slot || slot.fromMs === lastNotifiedFromMs) return
+    sendAlert(slot)
+  }
+
+  function sendAlert(slot) {
+    if (notifyProc.running) return
+    var when = timeOf(slot.fromMs)
+    var price = Model.formatPrice(slot.price)
+    var nowP = current ? Model.formatPrice(current.price) : "—"
+    var plunge = slot.price < 0
+    var headline = plunge ? ("Agile plunge at " + when) : ("Cheap Agile at " + when)
+    var body = price + "/kWh for 30 min · now " + nowP
+    lastNotifiedFromMs = slot.fromMs
+    notifyProc.command = [
+      "omarchy-notification-send",
+      "-g", "",
+      "-u", plunge ? "normal" : "low",
+      "--app-name", "Octopus Agile",
+      headline,
+      body,
+      "--exec", "omarchy-shell", "io.github.mariusfanu.octopus-agile", "toggle"
+    ]
+    notifyProc.running = true
   }
 
   // ---- Fetch -------------------------------------------------------------
@@ -172,10 +228,13 @@ Panel {
     }
     onExited: function(code) {
       if (code !== 0 && root.rates.length === 0) {
-        // Products fetch failed — fall back straight to rates with fallback product.
         root.refreshRates()
       }
     }
+  }
+
+  Process {
+    id: notifyProc
   }
 
   Process {
@@ -245,7 +304,10 @@ Panel {
     interval: 30000
     running: true
     repeat: true
-    onTriggered: root.nowMs = Date.now()
+    onTriggered: {
+      root.nowMs = Date.now()
+      root.checkAlerts()
+    }
   }
 
   Component.onCompleted: {
@@ -295,7 +357,6 @@ Panel {
           width: parent.width
           spacing: Style.space(14)
 
-          // ---- Hero ------------------------------------------------------
           Item {
             width: parent.width
             height: Math.max(heroLeft.height, heroRight.height)
@@ -412,7 +473,6 @@ Panel {
             font.italic: true
           }
 
-          // ---- Stats ------------------------------------------------------
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(36)
@@ -439,7 +499,6 @@ Panel {
             foreground: root.bar ? root.bar.foreground : "#fff"
           }
 
-          // ---- Cheapest windows -------------------------------------------
           Column {
             width: parent.width
             spacing: Style.space(8)
@@ -512,7 +571,6 @@ Panel {
             foreground: root.bar ? root.bar.foreground : "#fff"
           }
 
-          // ---- Day chart ---------------------------------------------------
           Column {
             width: parent.width
             spacing: Style.space(8)
@@ -532,7 +590,6 @@ Panel {
               font.italic: true
             }
 
-            // Hover readout — hovered slot, otherwise the current one.
             Text {
               visible: root.rates.length > 0
               width: parent.width
@@ -552,7 +609,6 @@ Panel {
               width: parent.width
               height: 110
 
-              // Y axis: gridlines + price labels at max / mid / min.
               Repeater {
                 model: root.rates.length > 0 ? [root.maxPrice, (root.minPrice + root.maxPrice) / 2, root.minPrice] : []
 
@@ -625,7 +681,6 @@ Panel {
                 }
               }
 
-              // Time ticks every ~4h
               Repeater {
                 model: root.rates.length > 0 ? Math.ceil(root.rates.length / 8) : 0
                 Text {
@@ -649,7 +704,42 @@ Panel {
             foreground: root.bar ? root.bar.foreground : "#fff"
           }
 
-          // ---- Footer: region + actions ------------------------------------
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSectionHeader {
+              text: "PILL"
+              foreground: root.bar ? root.bar.foreground : "#fff"
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Next-slot arrow"
+              description: "Show ↑ or ↓ when the next half-hour is a different price"
+              checked: root.showTrend
+              foreground: root.bar ? root.bar.foreground : "#fff"
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+              onClicked: root.setShowTrend(!root.showTrend)
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Cheap window alerts"
+              description: "Off by default. Notify before a slot below " + root.notifyBelow + "p, " + root.notifyLeadMin + " min ahead"
+              checked: root.notifyCheap
+              foreground: root.bar ? root.bar.foreground : "#fff"
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+              onClicked: root.setNotifyCheap(!root.notifyCheap)
+            }
+          }
+
+          PanelSeparator {
+            width: parent.width
+            foreground: root.bar ? root.bar.foreground : "#fff"
+          }
+
           Row {
             width: parent.width
             spacing: Style.space(10)
