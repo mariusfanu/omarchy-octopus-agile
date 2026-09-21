@@ -8,9 +8,24 @@ var PRODUCT_FALLBACK = "AGILE-24-10-01";
 // Octopus actually uses. Anything else falls back to PRODUCT_FALLBACK.
 var PRODUCT_RE = /^AGILE-[A-Z0-9-]{1,40}$/;
 
+// Auto-discovery is stricter still: only dated import products, so that a
+// plain string compare picks the newest and a stray code such as
+// "AGILE-99-ZZZZ" cannot win and pin the widget to a 404ing tariff.
+var DISCOVERY_RE = /^AGILE-\d{2}-\d{2}-\d{2}$/;
+
 // Hard ceiling on slots kept from one response. We request 48h (96 slots);
 // this stops a hostile body from fanning out into thousands of chart items.
 var MAX_SLOTS = 200;
+
+// Agile settles half-hourly. Accept a little slack either side but reject
+// second-long or day-long slots, which would otherwise let one response
+// drive a notification per clock tick or stay "current" forever.
+var MIN_SLOT_MS = 15 * 60 * 1000;
+var MAX_SLOT_MS = 60 * 60 * 1000;
+
+// p/kWh. Real Agile prices sit roughly in -20..100; anything past this is
+// garbage and would overflow stats/bar maths into Infinity or NaN.
+var MAX_ABS_PRICE = 10000;
 
 var REGIONS = [
   { value: "A", label: "A – East England" },
@@ -70,9 +85,8 @@ function parseLatestAgileProduct(raw) {
     var results = Array.isArray(data.results) ? data.results : [];
     var best = "";
     for (var i = 0; i < results.length; i++) {
-      var code = String(results[i] && results[i].code || "");
-      if (!isValidProduct(code) || !/^AGILE-\d/.test(code)) continue;
-      if (code.indexOf("OUTGOING") >= 0 || code.indexOf("BB-") >= 0) continue;
+      var code = results[i] && results[i].code;
+      if (typeof code !== "string" || !DISCOVERY_RE.test(code)) continue;
       if (code > best) best = code;
     }
     return best;
@@ -88,23 +102,36 @@ function parseRates(raw) {
     var out = [];
     for (var i = 0; i < results.length; i++) {
       var r = results[i];
-      if (!r || !r.valid_from || !r.valid_to) continue;
+      // Type-check before coercing so one malformed row (e.g. an object
+      // with a non-callable toString) is skipped instead of throwing out
+      // of the loop and discarding the whole response.
+      if (!r || typeof r !== "object") continue;
+      if (typeof r.valid_from !== "string" || typeof r.valid_to !== "string") continue;
+      var v = r.value_inc_vat;
+      if (typeof v !== "string" && typeof v !== "number") continue;
       var fromMs = Date.parse(r.valid_from);
       var toMs = Date.parse(r.valid_to);
-      var price = parseFloat(r.value_inc_vat);
+      var price = parseFloat(v);
       if (!isFinite(fromMs) || !isFinite(toMs) || !isFinite(price)) continue;
-      if (toMs <= fromMs) continue;
+      var span = toMs - fromMs;
+      if (span < MIN_SLOT_MS || span > MAX_SLOT_MS) continue;
+      if (Math.abs(price) > MAX_ABS_PRICE) continue;
       out.push({
         fromMs: fromMs,
         toMs: toMs,
-        fromIso: String(r.valid_from),
-        toIso: String(r.valid_to),
+        fromIso: r.valid_from,
+        toIso: r.valid_to,
         price: price
       });
     }
     out.sort(function(a, b) { return a.fromMs - b.fromMs; });
-    if (out.length > MAX_SLOTS) out.length = MAX_SLOTS;
-    return out;
+    // Drop duplicates and overlaps: keep the earliest slot in any clash.
+    var clean = [];
+    for (var j = 0; j < out.length && clean.length < MAX_SLOTS; j++) {
+      if (clean.length > 0 && out[j].fromMs < clean[clean.length - 1].toMs) continue;
+      clean.push(out[j]);
+    }
+    return clean;
   } catch (e) {
     return [];
   }
@@ -209,7 +236,9 @@ function formatPrice(p) {
   if (p === undefined || p === null || p === "") return "—";
   var n = parseFloat(p);
   if (isNaN(n)) return "—";
-  return n.toFixed(1) + "p";
+  var s = n.toFixed(1);
+  if (s === "-0.0") s = "0.0";
+  return s + "p";
 }
 
 function isOn(value, fallback) {
@@ -304,6 +333,9 @@ if (typeof module !== "undefined") {
   module.exports = {
     PRODUCT_FALLBACK: PRODUCT_FALLBACK,
     MAX_SLOTS: MAX_SLOTS,
+    MIN_SLOT_MS: MIN_SLOT_MS,
+    MAX_SLOT_MS: MAX_SLOT_MS,
+    MAX_ABS_PRICE: MAX_ABS_PRICE,
     REGIONS: REGIONS,
     isValidProduct: isValidProduct,
     normalizeProduct: normalizeProduct,
