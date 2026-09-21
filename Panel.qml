@@ -60,6 +60,7 @@ Panel {
   property string lastUpdated: ""
   property var hoveredSlot: null
   property double lastNotifiedFromMs: 0
+  property int ratesFailures: 0
 
   onRatesChanged: {
     root.hoveredSlot = null
@@ -67,8 +68,8 @@ Panel {
   }
 
   readonly property string region: Model.normalizeRegion(setting("region", "C"), "C")
-  readonly property string productOverride: String(setting("product", "") || "")
-  readonly property string product: productOverride !== "" ? productOverride : (discoveredProduct !== "" ? discoveredProduct : Model.PRODUCT_FALLBACK)
+  readonly property string productOverride: Model.isValidProduct(setting("product", "")) ? String(setting("product", "")) : ""
+  readonly property string product: Model.normalizeProduct(productOverride !== "" ? productOverride : discoveredProduct, Model.PRODUCT_FALLBACK)
   readonly property bool showTrend: Model.isOn(setting("showTrend", true), true)
   readonly property bool notifyCheap: Model.isOn(setting("notifyCheap", false), false)
   readonly property int notifyLeadMin: Model.clampInt(setting("notifyLeadMin", 15), 15, 5, 30)
@@ -134,6 +135,7 @@ Panel {
     var nextRegion = Model.normalizeRegion(code, region)
     if (nextRegion === region) return
     lastNotifiedFromMs = 0
+    ratesFailures = 0
     persistSettings({ region: nextRegion })
     Qt.callLater(root.refreshRates)
   }
@@ -175,38 +177,52 @@ Panel {
   }
 
   // Cap both Octopus responses in the producer so StdioCollector cannot grow
-  // unbounded. --max-filesize covers known Content-Length; head -c still
-  // stops chunked/unknown-length streams. Read one extra byte so overflow
-  // is distinguishable from a full-size valid body.
+  // unbounded. Since curl 8.4.0 --max-filesize also aborts transfers whose
+  // size is unknown up front (chunked / no Content-Length) the moment they
+  // cross the limit, exiting 63; the byte check in onExited is a backstop.
+  // curl is invoked directly (no shell) with the URL after "--".
   readonly property int responseCap: 131072
 
   function curlCommand(url, maxTime) {
-    return ["bash", "-c",
-      "set -o pipefail; curl -fsS --proto =https --max-time \"$2\" --max-filesize \"$3\" -- \"$1\" | head -c \"$4\"",
-      "octopus-agile",
-      url,
-      String(maxTime),
-      String(root.responseCap),
-      String(root.responseCap + 1)]
+    return ["curl", "-fsS",
+      "--proto", "=https", "--tlsv1.2",
+      "--max-time", String(maxTime),
+      "--max-filesize", String(root.responseCap),
+      "--", url]
   }
 
   function bodyBytes(collector) {
-    if (collector.data && collector.data.byteLength !== undefined)
-      return collector.data.byteLength
-    return String(collector.text || "").length
+    return collector.data ? collector.data.byteLength : 0
   }
 
+  // A response is only trusted when the process exited normally (not
+  // killed) with status 0 and the body is non-empty and within the cap.
+  function cleanBody(collector, code, status) {
+    if (status !== 0 || code !== 0) return null
+    var n = root.bodyBytes(collector)
+    if (n === 0 || n > root.responseCap) return null
+    var raw = String(collector.text || "").trim()
+    return raw !== "" ? raw : null
+  }
+
+  // Failures back off 15s → 30s → 60s → 2m → 4m, then stop and leave it
+  // to the 5-minute refresh timer, so a dead endpoint (or offline machine)
+  // is not polled every 15s indefinitely.
   function ratesFailed(message) {
     if (root.rates.length === 0) {
       root.error = message
       root.loading = false
     }
+    root.ratesFailures++
+    if (root.ratesFailures > 5) return
+    retryTimer.interval = 15000 * Math.pow(2, root.ratesFailures - 1)
     retryTimer.restart()
   }
 
   // ---- Fetch -------------------------------------------------------------
   function refresh() {
     nowMs = Date.now()
+    ratesFailures = 0
     if (productOverride === "" && discoveredProduct === "") {
       fetchProducts()
     } else {
@@ -230,8 +246,10 @@ Panel {
     var from = new Date(nowMs - 12 * 3600 * 1000).toISOString()
     var to = new Date(nowMs + 36 * 3600 * 1000).toISOString()
     var tariff = Model.tariffCode(product, region)
-    var url = "https://api.octopus.energy/v1/products/" + product
-      + "/electricity-tariffs/" + tariff + "/standard-unit-rates/"
+    // product and tariff are validated (Model.PRODUCT_RE / REGIONS), so
+    // encodeURIComponent is a no-op here; it stays as a second guard.
+    var url = "https://api.octopus.energy/v1/products/" + encodeURIComponent(product)
+      + "/electricity-tariffs/" + encodeURIComponent(tariff) + "/standard-unit-rates/"
       + "?period_from=" + encodeURIComponent(from)
       + "&period_to=" + encodeURIComponent(to)
       + "&page_size=100&ordering=valid_from"
@@ -249,13 +267,11 @@ Panel {
       id: productOut
       waitForEnd: true
     }
-    onExited: function(code) {
-      if (code === 0) {
-        var n = root.bodyBytes(productOut)
-        if (n > 0 && n <= root.responseCap) {
-          var latest = Model.parseLatestAgileProduct(String(productOut.text || ""))
-          if (latest !== "") root.discoveredProduct = latest
-        }
+    onExited: function(code, status) {
+      var raw = root.cleanBody(productOut, code, status)
+      if (raw !== null) {
+        var latest = Model.parseLatestAgileProduct(raw)
+        if (latest !== "") root.discoveredProduct = latest
       }
       root.refreshRates()
     }
@@ -271,38 +287,31 @@ Panel {
       id: ratesOut
       waitForEnd: true
     }
-    onExited: function(code) {
-      if (code !== 0) {
+    onExited: function(code, status) {
+      if (status !== 0 || code !== 0) {
         root.ratesFailed("Fetch failed (code " + code + ")")
         return
       }
       var n = root.bodyBytes(ratesOut)
-      if (n === 0) {
-        root.ratesFailed("No data — check connection")
-        return
-      }
       if (n > root.responseCap) {
         root.ratesFailed("Response too large")
         return
       }
-      var raw = String(ratesOut.text || "").trim()
-      if (!raw) {
+      var raw = root.cleanBody(ratesOut, code, status)
+      if (raw === null) {
         root.ratesFailed("No data — check connection")
         return
       }
-      try {
-        var parsed = Model.parseRates(raw)
-        if (parsed.length === 0) {
-          root.ratesFailed("No Agile slots returned")
-          return
-        }
-        root.rates = parsed
-        root.error = ""
-        root.loading = false
-        root.lastUpdated = Qt.formatDateTime(new Date(), "HH:mm:ss")
-      } catch (e) {
-        root.ratesFailed("Parse error")
+      var parsed = Model.parseRates(raw)
+      if (parsed.length === 0) {
+        root.ratesFailed("No Agile slots returned")
+        return
       }
+      root.rates = parsed
+      root.error = ""
+      root.loading = false
+      root.ratesFailures = 0
+      root.lastUpdated = Qt.formatDateTime(new Date(), "HH:mm:ss")
     }
   }
 
@@ -490,6 +499,7 @@ Panel {
             visible: root.error !== "" && root.rates.length === 0
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
+            textFormat: Text.PlainText
             text: root.error + " · middle-click pill to retry"
             color: "#f87171"
             font.family: root.bar ? root.bar.fontFamily : Style.font.family

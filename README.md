@@ -11,6 +11,7 @@ Live Octopus Agile electricity prices in your bar.
 - Optional **cheap-window alerts** (off by default): a desktop notification
   before a slot below 10p, or any plunge. Click the toast to open the popup.
 - Prices auto-refresh every 5 minutes; the current slot rolls over every 30s.
+  Failed fetches back off (15s → 4m) before deferring to the next refresh.
 
 ## Install
 
@@ -60,7 +61,7 @@ That disables the widget and deletes the plugin checkout. It does not edit `omar
 ```
 
 - `region`: UK DNO letter A–P (default `C` London). Change it from the popup dropdown.
-- `product`: optional override. When empty the latest `AGILE-*` import product is auto-discovered.
+- `product`: optional override such as `AGILE-24-10-01` (must match `AGILE-[A-Z0-9-]+`; anything else is ignored). When empty the latest `AGILE-*` import product is auto-discovered.
 - `showTrend`: `true` (default) shows ↑ / ↓ on the pill. Turn it off from the popup or Omarchy widget settings.
 - `notifyCheap`: `false` (default). When `true`, notify before a cheap or plunge slot.
 - `notifyLeadMin`: minutes ahead to warn (5–30, default 15).

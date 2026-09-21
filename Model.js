@@ -3,6 +3,15 @@
 
 var PRODUCT_FALLBACK = "AGILE-24-10-01";
 
+// Product codes come from the network (discovery) or shell.json (override)
+// and are interpolated into the API URL path, so only accept the shape
+// Octopus actually uses. Anything else falls back to PRODUCT_FALLBACK.
+var PRODUCT_RE = /^AGILE-[A-Z0-9-]{1,40}$/;
+
+// Hard ceiling on slots kept from one response. We request 48h (96 slots);
+// this stops a hostile body from fanning out into thousands of chart items.
+var MAX_SLOTS = 200;
+
 var REGIONS = [
   { value: "A", label: "A – East England" },
   { value: "B", label: "B – East Midlands" },
@@ -44,14 +53,25 @@ function normalizeRegion(code, fallback) {
   return "C";
 }
 
+function isValidProduct(code) {
+  return PRODUCT_RE.test(String(code || ""));
+}
+
+function normalizeProduct(code, fallback) {
+  var c = String(code || "");
+  if (isValidProduct(c)) return c;
+  var f = String(fallback || "");
+  return isValidProduct(f) ? f : PRODUCT_FALLBACK;
+}
+
 function parseLatestAgileProduct(raw) {
   try {
     var data = JSON.parse(String(raw || "{}"));
-    var results = data.results || [];
+    var results = Array.isArray(data.results) ? data.results : [];
     var best = "";
     for (var i = 0; i < results.length; i++) {
       var code = String(results[i] && results[i].code || "");
-      if (!/^AGILE-\d/.test(code)) continue;
+      if (!isValidProduct(code) || !/^AGILE-\d/.test(code)) continue;
       if (code.indexOf("OUTGOING") >= 0 || code.indexOf("BB-") >= 0) continue;
       if (code > best) best = code;
     }
@@ -64,7 +84,7 @@ function parseLatestAgileProduct(raw) {
 function parseRates(raw) {
   try {
     var data = JSON.parse(String(raw || "{}"));
-    var results = data.results || [];
+    var results = Array.isArray(data.results) ? data.results : [];
     var out = [];
     for (var i = 0; i < results.length; i++) {
       var r = results[i];
@@ -72,7 +92,8 @@ function parseRates(raw) {
       var fromMs = Date.parse(r.valid_from);
       var toMs = Date.parse(r.valid_to);
       var price = parseFloat(r.value_inc_vat);
-      if (isNaN(fromMs) || isNaN(toMs) || isNaN(price)) continue;
+      if (!isFinite(fromMs) || !isFinite(toMs) || !isFinite(price)) continue;
+      if (toMs <= fromMs) continue;
       out.push({
         fromMs: fromMs,
         toMs: toMs,
@@ -82,6 +103,7 @@ function parseRates(raw) {
       });
     }
     out.sort(function(a, b) { return a.fromMs - b.fromMs; });
+    if (out.length > MAX_SLOTS) out.length = MAX_SLOTS;
     return out;
   } catch (e) {
     return [];
@@ -281,7 +303,10 @@ function tariffCode(product, region) {
 if (typeof module !== "undefined") {
   module.exports = {
     PRODUCT_FALLBACK: PRODUCT_FALLBACK,
+    MAX_SLOTS: MAX_SLOTS,
     REGIONS: REGIONS,
+    isValidProduct: isValidProduct,
+    normalizeProduct: normalizeProduct,
     regionLabel: regionLabel,
     isValidRegion: isValidRegion,
     normalizeRegion: normalizeRegion,
