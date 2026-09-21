@@ -61,6 +61,9 @@ Panel {
   property double lastFetchMs: 0
   property var hoveredSlot: null
   property double lastNotifiedFromMs: 0
+  property double lastNotifiedAtMs: 0
+  // Never more than one toast per ~slot, whatever the data says.
+  readonly property int minAlertGapMs: 25 * 60 * 1000
 
   // In-flight bookkeeping. A rates response is only applied when it was
   // requested for the tariff that is still selected; a refresh asked for
@@ -68,6 +71,11 @@ Panel {
   property string ratesTariff: ""
   property bool ratesPending: false
   property int ratesFailures: 0
+  // Set once the startup chain has issued its first rates request. QML
+  // fires the *Changed handlers below during construction (default "" →
+  // first bound value) and again when the host injects settings; until
+  // primed, refresh() → discovery owns the first fetch.
+  property bool primed: false
 
   onRatesChanged: {
     root.hoveredSlot = null
@@ -83,6 +91,16 @@ Panel {
   readonly property int notifyBelow: Model.clampInt(setting("notifyBelow", 10), 10, 0, 25)
 
   onNotifyCheapChanged: if (notifyCheap) Qt.callLater(root.checkAlerts)
+
+  // Tariff inputs can change from this panel, from another bar's panel via
+  // shell.json, or from discovery. Refetch once primed; while discovery is
+  // running its exit handler issues the request with the new values.
+  onRegionChanged: {
+    lastNotifiedFromMs = 0
+    resetRetries()
+    if (primed && !productProc.running) refreshRates()
+  }
+  onProductChanged: if (primed && !productProc.running) refreshRates()
 
   readonly property var current: Model.findCurrent(rates, nowMs)
   readonly property var next: Model.findNext(rates, nowMs)
@@ -141,10 +159,7 @@ Panel {
   function setRegion(code) {
     var nextRegion = Model.normalizeRegion(code, region)
     if (nextRegion === region) return
-    lastNotifiedFromMs = 0
-    ratesFailures = 0
     persistSettings({ region: nextRegion })
-    Qt.callLater(root.refreshRates)
   }
 
   function setShowTrend(on) {
@@ -159,6 +174,7 @@ Panel {
     if (!notifyCheap || rates.length === 0) return
     var slot = Model.nextNotifiableSlot(rates, nowMs, notifyLeadMin * 60 * 1000, notifyBelow)
     if (!slot || slot.fromMs === lastNotifiedFromMs) return
+    if (nowMs - lastNotifiedAtMs < minAlertGapMs) return
     sendAlert(slot)
   }
 
@@ -171,6 +187,7 @@ Panel {
     var headline = plunge ? ("Agile plunge at " + when) : ("Cheap Agile at " + when)
     var body = price + "/kWh for 30 min · now " + nowP
     lastNotifiedFromMs = slot.fromMs
+    lastNotifiedAtMs = nowMs
     notifyProc.command = [
       "omarchy-notification-send",
       "-g", "",
@@ -212,6 +229,11 @@ Panel {
     return raw !== "" ? raw : null
   }
 
+  function resetRetries() {
+    ratesFailures = 0
+    retryTimer.stop()
+  }
+
   // Failures back off 15s → 30s → 60s → 2m → 4m, then stop and leave it
   // to the 5-minute refresh timer, so a dead endpoint (or offline machine)
   // is not polled every 15s indefinitely.
@@ -227,9 +249,17 @@ Panel {
   }
 
   // ---- Fetch -------------------------------------------------------------
+  // User/IPC-initiated: fresh retry budget, then fetch.
   function refresh() {
+    resetRetries()
+    fetchOrRefresh()
+  }
+
+  // Discover the product first if that has not succeeded yet, otherwise go
+  // straight to rates. Used by timers too so an offline start still ends up
+  // on the latest product.
+  function fetchOrRefresh() {
     nowMs = Date.now()
-    ratesFailures = 0
     if (productOverride === "" && discoveredProduct === "") {
       fetchProducts()
     } else {
@@ -252,6 +282,7 @@ Panel {
   }
 
   function refreshRates() {
+    primed = true
     if (ratesProc.running) {
       ratesPending = true
       return
@@ -285,12 +316,14 @@ Panel {
       waitForEnd: true
     }
     onExited: function(code, status) {
+      var before = root.product
       var raw = root.cleanBody(productOut, code, status)
       if (raw !== null) {
         var latest = Model.parseLatestAgileProduct(raw)
         if (latest !== "") root.discoveredProduct = latest
       }
-      root.refreshRates()
+      // Once primed, a changed product already refetched via onProductChanged.
+      if (!root.primed || root.product === before) root.refreshRates()
     }
   }
 
@@ -308,13 +341,20 @@ Panel {
       // Region/product changed mid-flight: this body is for the wrong
       // tariff. Drop it and fetch the right one.
       var stale = root.ratesTariff !== Model.tariffCode(root.product, root.region)
-      if (stale || root.ratesPending) {
-        root.ratesPending = false
-        Qt.callLater(root.refreshRates)
-      }
+      var failed = status !== 0 || code !== 0
+      // Replay a queued refresh only when this result cannot serve it.
+      if (stale || (root.ratesPending && failed)) Qt.callLater(root.refreshRates)
+      root.ratesPending = false
       if (stale) return
 
-      if (status !== 0 || code !== 0) {
+      if (failed) {
+        // curl -f exits 22 on HTTP >= 400. A 404 for a product we chose
+        // ourselves means discovery picked a tariff that does not exist.
+        // Pin the known-good fallback for this session rather than
+        // re-discovering, which would just pick the same code again.
+        if (code === 22 && root.productOverride === "" && root.discoveredProduct !== ""
+            && root.discoveredProduct !== Model.PRODUCT_FALLBACK)
+          root.discoveredProduct = Model.PRODUCT_FALLBACK
         root.ratesFailed("Fetch failed (code " + code + ")")
         return
       }
@@ -336,7 +376,7 @@ Panel {
       root.rates = parsed
       root.error = ""
       root.loading = false
-      root.ratesFailures = 0
+      root.resetRetries()
       root.lastFetchMs = Date.now()
       root.lastUpdated = Qt.formatDateTime(new Date(), "HH:mm:ss")
     }
@@ -346,7 +386,7 @@ Panel {
     id: retryTimer
     interval: 15000
     repeat: false
-    onTriggered: root.refreshRates()
+    onTriggered: root.fetchOrRefresh()
   }
 
   // Periodic refresh only; the first fetch is driven from onCompleted via
@@ -356,7 +396,7 @@ Panel {
     interval: 5 * 60 * 1000
     running: true
     repeat: true
-    onTriggered: root.refreshRates()
+    onTriggered: root.fetchOrRefresh()
   }
 
   Timer {
@@ -539,17 +579,17 @@ Panel {
 
             Column {
               spacing: Style.space(4)
-              Text { text: "MIN"; color: root.bar ? Qt.darker(root.bar.foreground, 1.5) : "#888"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption; font.letterSpacing: 1 }
+              Text { textFormat: Text.PlainText; text: "MIN"; color: root.bar ? Qt.darker(root.bar.foreground, 1.5) : "#888"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption; font.letterSpacing: 1 }
               Text { textFormat: Text.PlainText; text: root.rates.length > 0 ? Model.formatPrice(root.minPrice) : "—"; color: root.priceColor(root.minPrice); font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.title; font.bold: true }
             }
             Column {
               spacing: Style.space(4)
-              Text { text: "AVG"; color: root.bar ? Qt.darker(root.bar.foreground, 1.5) : "#888"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption; font.letterSpacing: 1 }
+              Text { textFormat: Text.PlainText; text: "AVG"; color: root.bar ? Qt.darker(root.bar.foreground, 1.5) : "#888"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption; font.letterSpacing: 1 }
               Text { textFormat: Text.PlainText; text: root.rates.length > 0 ? Model.formatPrice(root.rateStats.avg) : "—"; color: root.bar ? root.bar.foreground : "#fff"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.title; font.bold: true }
             }
             Column {
               spacing: Style.space(4)
-              Text { text: "MAX"; color: root.bar ? Qt.darker(root.bar.foreground, 1.5) : "#888"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption; font.letterSpacing: 1 }
+              Text { textFormat: Text.PlainText; text: "MAX"; color: root.bar ? Qt.darker(root.bar.foreground, 1.5) : "#888"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption; font.letterSpacing: 1 }
               Text { textFormat: Text.PlainText; text: root.rates.length > 0 ? Model.formatPrice(root.maxPrice) : "—"; color: root.priceColor(root.maxPrice); font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.title; font.bold: true }
             }
           }
@@ -645,6 +685,7 @@ Panel {
 
             Text {
               visible: root.rates.length === 0
+              textFormat: Text.PlainText
               text: root.loading ? "Fetching Agile prices…" : "No data yet"
               color: root.bar ? Qt.darker(root.bar.foreground, 1.5) : "#888"
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
