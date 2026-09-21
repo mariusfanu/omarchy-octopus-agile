@@ -212,20 +212,29 @@ Panel {
       "--proto", "=https", "--tlsv1.2",
       "--max-time", String(maxTime),
       "--max-filesize", String(root.responseCap),
+      "-w", "\n%{http_code}",
       "--", url]
   }
 
-  function bodyBytes(collector) {
-    return collector.data ? collector.data.byteLength : 0
+  // curl -w appends \n%{http_code} after the body. -f still exits 22 on
+  // HTTP >= 400 but leaves that trailer, so 404 can be told from 500.
+  function splitResponse(text) {
+    var raw = String(text || "")
+    var nl = raw.lastIndexOf("\n")
+    if (nl < 0) return { http: 0, body: raw }
+    var tail = raw.slice(nl + 1)
+    if (!/^[1-9][0-9]{2}$/.test(tail)) return { http: 0, body: raw }
+    return { http: parseInt(tail, 10), body: raw.slice(0, nl) }
   }
 
   // A response is only trusted when the process exited normally (not
-  // killed) with status 0 and the body is non-empty and within the cap.
+  // killed) with status 0, HTTP 200, and a non-empty in-cap body.
   function cleanBody(collector, code, status) {
     if (status !== 0 || code !== 0) return null
-    var n = root.bodyBytes(collector)
-    if (n === 0 || n > root.responseCap) return null
-    var raw = String(collector.text || "").trim()
+    var parts = root.splitResponse(collector.text)
+    if (parts.http !== 200) return null
+    if (parts.body.length === 0 || parts.body.length > root.responseCap) return null
+    var raw = String(parts.body || "").trim()
     return raw !== "" ? raw : null
   }
 
@@ -347,20 +356,15 @@ Panel {
       root.ratesPending = false
       if (stale) return
 
+      var http = root.splitResponse(ratesOut.text).http
       if (failed) {
-        // curl -f exits 22 on HTTP >= 400. A 404 for a product we chose
-        // ourselves means discovery picked a tariff that does not exist.
-        // Pin the known-good fallback for this session rather than
-        // re-discovering, which would just pick the same code again.
-        if (code === 22 && root.productOverride === "" && root.discoveredProduct !== ""
+        // curl -f exits 22 for every HTTP >= 400. Pin fallback only on
+        // 404: the discovered tariff does not exist. 429/500 stay on
+        // that product and retry.
+        if (http === 404 && root.productOverride === "" && root.discoveredProduct !== ""
             && root.discoveredProduct !== Model.PRODUCT_FALLBACK)
           root.discoveredProduct = Model.PRODUCT_FALLBACK
         root.ratesFailed("Fetch failed (code " + code + ")")
-        return
-      }
-      var n = root.bodyBytes(ratesOut)
-      if (n > root.responseCap) {
-        root.ratesFailed("Response too large")
         return
       }
       var raw = root.cleanBody(ratesOut, code, status)
