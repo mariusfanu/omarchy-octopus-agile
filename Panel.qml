@@ -174,6 +174,36 @@ Panel {
     notifyProc.running = true
   }
 
+  // Cap both Octopus responses in the producer so StdioCollector cannot grow
+  // unbounded. --max-filesize covers known Content-Length; head -c still
+  // stops chunked/unknown-length streams. Read one extra byte so overflow
+  // is distinguishable from a full-size valid body.
+  readonly property int responseCap: 131072
+
+  function curlCommand(url, maxTime) {
+    return ["bash", "-c",
+      "set -o pipefail; curl -fsS --proto =https --max-time \"$2\" --max-filesize \"$3\" -- \"$1\" | head -c \"$4\"",
+      "octopus-agile",
+      url,
+      String(maxTime),
+      String(root.responseCap),
+      String(root.responseCap + 1)]
+  }
+
+  function bodyBytes(collector) {
+    if (collector.data && collector.data.byteLength !== undefined)
+      return collector.data.byteLength
+    return String(collector.text || "").length
+  }
+
+  function ratesFailed(message) {
+    if (root.rates.length === 0) {
+      root.error = message
+      root.loading = false
+    }
+    retryTimer.restart()
+  }
+
   // ---- Fetch -------------------------------------------------------------
   function refresh() {
     nowMs = Date.now()
@@ -187,8 +217,8 @@ Panel {
   function fetchProducts() {
     if (productProc.running) return
     loading = rates.length === 0
-    productProc.command = ["curl", "-fsS", "--max-time", "10",
-      "https://api.octopus.energy/v1/products/?is_variable=true&page_size=100"]
+    productProc.command = root.curlCommand(
+      "https://api.octopus.energy/v1/products/?is_variable=true&page_size=100", 10)
     productProc.running = true
   }
 
@@ -205,7 +235,7 @@ Panel {
       + "?period_from=" + encodeURIComponent(from)
       + "&period_to=" + encodeURIComponent(to)
       + "&page_size=100&ordering=valid_from"
-    ratesProc.command = ["curl", "-fsS", "--max-time", "12", url]
+    ratesProc.command = root.curlCommand(url, 12)
     ratesProc.running = true
   }
 
@@ -216,20 +246,18 @@ Panel {
   Process {
     id: productProc
     stdout: StdioCollector {
+      id: productOut
       waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text || "")
-        var latest = Model.parseLatestAgileProduct(raw)
-        if (latest !== "") {
-          root.discoveredProduct = latest
-        }
-        root.refreshRates()
-      }
     }
     onExited: function(code) {
-      if (code !== 0 && root.rates.length === 0) {
-        root.refreshRates()
+      if (code === 0) {
+        var n = root.bodyBytes(productOut)
+        if (n > 0 && n <= root.responseCap) {
+          var latest = Model.parseLatestAgileProduct(String(productOut.text || ""))
+          if (latest !== "") root.discoveredProduct = latest
+        }
       }
+      root.refreshRates()
     }
   }
 
@@ -240,45 +268,40 @@ Panel {
   Process {
     id: ratesProc
     stdout: StdioCollector {
+      id: ratesOut
       waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text || "").trim()
-        if (!raw) {
-          if (root.rates.length === 0) {
-            root.error = "No data — check connection"
-            root.loading = false
-          }
-          retryTimer.restart()
-          return
-        }
-        try {
-          var parsed = Model.parseRates(raw)
-          if (parsed.length === 0) {
-            if (root.rates.length === 0) {
-              root.error = "No Agile slots returned"
-              root.loading = false
-            }
-            retryTimer.restart()
-            return
-          }
-          root.rates = parsed
-          root.error = ""
-          root.loading = false
-          root.lastUpdated = Qt.formatDateTime(new Date(), "HH:mm:ss")
-        } catch (e) {
-          if (root.rates.length === 0) {
-            root.error = "Parse error"
-            root.loading = false
-          }
-          retryTimer.restart()
-        }
-      }
     }
     onExited: function(code) {
-      if (code !== 0 && root.rates.length === 0) {
-        root.error = "Fetch failed (code " + code + ")"
+      if (code !== 0) {
+        root.ratesFailed("Fetch failed (code " + code + ")")
+        return
+      }
+      var n = root.bodyBytes(ratesOut)
+      if (n === 0) {
+        root.ratesFailed("No data — check connection")
+        return
+      }
+      if (n > root.responseCap) {
+        root.ratesFailed("Response too large")
+        return
+      }
+      var raw = String(ratesOut.text || "").trim()
+      if (!raw) {
+        root.ratesFailed("No data — check connection")
+        return
+      }
+      try {
+        var parsed = Model.parseRates(raw)
+        if (parsed.length === 0) {
+          root.ratesFailed("No Agile slots returned")
+          return
+        }
+        root.rates = parsed
+        root.error = ""
         root.loading = false
-        retryTimer.restart()
+        root.lastUpdated = Qt.formatDateTime(new Date(), "HH:mm:ss")
+      } catch (e) {
+        root.ratesFailed("Parse error")
       }
     }
   }
@@ -357,6 +380,7 @@ Panel {
           width: parent.width
           spacing: Style.space(14)
 
+          // ---- Hero ------------------------------------------------------
           Item {
             width: parent.width
             height: Math.max(heroLeft.height, heroRight.height)
@@ -473,6 +497,7 @@ Panel {
             font.italic: true
           }
 
+          // ---- Stats ------------------------------------------------------
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(36)
@@ -499,6 +524,7 @@ Panel {
             foreground: root.bar ? root.bar.foreground : "#fff"
           }
 
+          // ---- Cheapest windows -------------------------------------------
           Column {
             width: parent.width
             spacing: Style.space(8)
@@ -571,6 +597,7 @@ Panel {
             foreground: root.bar ? root.bar.foreground : "#fff"
           }
 
+          // ---- Day chart ---------------------------------------------------
           Column {
             width: parent.width
             spacing: Style.space(8)
@@ -590,6 +617,7 @@ Panel {
               font.italic: true
             }
 
+            // Hover readout — hovered slot, otherwise the current one.
             Text {
               visible: root.rates.length > 0
               width: parent.width
@@ -609,6 +637,7 @@ Panel {
               width: parent.width
               height: 110
 
+              // Y axis: gridlines + price labels at max / mid / min.
               Repeater {
                 model: root.rates.length > 0 ? [root.maxPrice, (root.minPrice + root.maxPrice) / 2, root.minPrice] : []
 
@@ -681,6 +710,7 @@ Panel {
                 }
               }
 
+              // Time ticks every ~4h
               Repeater {
                 model: root.rates.length > 0 ? Math.ceil(root.rates.length / 8) : 0
                 Text {
@@ -740,6 +770,7 @@ Panel {
             foreground: root.bar ? root.bar.foreground : "#fff"
           }
 
+          // ---- Footer: region + actions ------------------------------------
           Row {
             width: parent.width
             spacing: Style.space(10)
