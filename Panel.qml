@@ -17,12 +17,12 @@ Panel {
 
   function open() {
     root.controller.show()
-    root.refresh()
+    root.refreshIfStale()
   }
 
   function openFromHotkey() {
     root.controller.show()
-    root.refresh()
+    root.refreshIfStale()
     Qt.callLater(function() {
       if (root.opened) setCenterHoverRevealSuppressed(true)
     })
@@ -58,8 +58,15 @@ Panel {
   property bool loading: false
   property string error: ""
   property string lastUpdated: ""
+  property double lastFetchMs: 0
   property var hoveredSlot: null
   property double lastNotifiedFromMs: 0
+
+  // In-flight bookkeeping. A rates response is only applied when it was
+  // requested for the tariff that is still selected; a refresh asked for
+  // while one is running is replayed once it exits.
+  property string ratesTariff: ""
+  property bool ratesPending: false
   property int ratesFailures: 0
 
   onRatesChanged: {
@@ -230,6 +237,12 @@ Panel {
     }
   }
 
+  // Opening the popup should not cost an API call when data is fresh.
+  function refreshIfStale() {
+    nowMs = Date.now()
+    if (rates.length === 0 || nowMs - lastFetchMs > 60 * 1000) refresh()
+  }
+
   function fetchProducts() {
     if (productProc.running) return
     loading = rates.length === 0
@@ -239,7 +252,10 @@ Panel {
   }
 
   function refreshRates() {
-    if (ratesProc.running) return
+    if (ratesProc.running) {
+      ratesPending = true
+      return
+    }
     nowMs = Date.now()
     loading = rates.length === 0
     error = ""
@@ -253,6 +269,7 @@ Panel {
       + "?period_from=" + encodeURIComponent(from)
       + "&period_to=" + encodeURIComponent(to)
       + "&page_size=100&ordering=valid_from"
+    ratesTariff = tariff
     ratesProc.command = root.curlCommand(url, 12)
     ratesProc.running = true
   }
@@ -288,6 +305,15 @@ Panel {
       waitForEnd: true
     }
     onExited: function(code, status) {
+      // Region/product changed mid-flight: this body is for the wrong
+      // tariff. Drop it and fetch the right one.
+      var stale = root.ratesTariff !== Model.tariffCode(root.product, root.region)
+      if (stale || root.ratesPending) {
+        root.ratesPending = false
+        Qt.callLater(root.refreshRates)
+      }
+      if (stale) return
+
       if (status !== 0 || code !== 0) {
         root.ratesFailed("Fetch failed (code " + code + ")")
         return
@@ -311,6 +337,7 @@ Panel {
       root.error = ""
       root.loading = false
       root.ratesFailures = 0
+      root.lastFetchMs = Date.now()
       root.lastUpdated = Qt.formatDateTime(new Date(), "HH:mm:ss")
     }
   }
@@ -322,12 +349,13 @@ Panel {
     onTriggered: root.refreshRates()
   }
 
+  // Periodic refresh only; the first fetch is driven from onCompleted via
+  // product discovery so startup issues a single rates request.
   Timer {
     id: refreshTimer
     interval: 5 * 60 * 1000
     running: true
     repeat: true
-    triggeredOnStart: true
     onTriggered: root.refreshRates()
   }
 
@@ -342,10 +370,7 @@ Panel {
     }
   }
 
-  Component.onCompleted: {
-    if (productOverride === "" && discoveredProduct === "")
-      Qt.callLater(root.fetchProducts)
-  }
+  Component.onCompleted: Qt.callLater(root.refresh)
 
   IpcHandler {
     target: root.ipcTarget
